@@ -1,0 +1,347 @@
+stages:
+  - source
+  - test
+  - build
+  - scan
+  - deploy
+  - deploy-uat
+  - deploy-prod
+
+.default_rules: &default_rules
+  rules:
+    - when: always 
+    - allow_failure: false
+
+.cd_rules: &cd_rules
+  rules:
+    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^feature-.*$/ && 
+           $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
+      when: always
+    - when: never
+
+.cd_rules_prod: &cd_rules_prod
+  rules:
+    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^feature-.*$/ && 
+           $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
+      when: manual
+    - when: never
+
+default-job:
+  <<: *default_rules
+  stage: .pre
+  script:
+    - echo "nameserver 8.8.8.8" > /etc/resolv.conf
+
+before_script:
+  - cd src/ui
+
+build-artifact:
+  <<: *default_rules
+  image: maven:3.9.9-amazoncorretto-23-alpine
+  stage: source
+  script:
+    - mkdir -p ~/.m2
+    - cp settings.xml ~/.m2/settings.xml
+    - mvn dependency:go-offline -B -q
+    - mvn -DskipTests package -X
+  artifacts:
+    paths:
+      - src/ui/target/*
+    expire_in: 10 minutes
+
+test:
+  <<: *default_rules
+  image: maven:3.9.9-amazoncorretto-23-alpine
+  stage: test
+  dependencies:
+    - build-artifact
+  script:
+    - mkdir -p ~/.m2
+    - cp settings.xml ~/.m2/settings.xml
+    - mvn -DskipTests clean test -q
+  artifacts:
+    paths:
+      - target/surefire-reports/*.xml
+    expire_in: 10 minutes
+
+sonarqube-check-frontend:
+  <<: *default_rules
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  stage: test
+  needs:
+    - build-artifact
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - sonar-scanner 
+      -X
+      -Dsonar.projectKey=retail-store-ui
+      -Dsonar.projectName=retail-store-ui
+      -Dsonar.sources=target/
+      -Dsonar.java.binaries=target/classes
+      -Dsonar.host.url=http://192.168.120.36:30010
+      -Dsonar.login=$SONAR_TOKEN_UI
+      -Dsonar.qualitygate.wait=true
+
+build-docker-ui:
+  stage: build
+  image: docker:20.10.16
+  tags:
+    - docker-in-docker
+  dependencies:
+    - build-artifact
+  rules:
+    - !reference [.cd_rules, rules]
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY_URL_HOST
+    - export TAG_CLEAN=$(echo $TAG | sed 's/[^a-zA-Z0-9_.-]//g')
+    - docker pull $CI_REGISTRY_IMAGE_UI:latest || true
+    - >
+      docker build
+      --cache-from $CI_REGISTRY_IMAGE_UI:latest
+      -f Dockerfile
+      --build-arg BUILD_PATH=build/ 
+      -t temp_image_ui
+      .
+
+    - docker save temp_image_ui > image_ui.tar
+  artifacts:
+    paths:
+      - src/ui/image_ui.tar
+    expire_in: 15 minutes
+    
+trivy-scan:
+  stage: scan
+  image: docker:20.10.16
+  tags:
+    - docker-in-docker
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+  rules:
+    - !reference [.cd_rules, rules]
+  script:
+    - apk add curl
+    - docker info
+    - |
+      echo "Attempting to log in to registry..."
+      MAX_RETRIES=3
+      RETRY_COUNT=0
+      LOGIN_SUCCESS=false
+
+      while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$LOGIN_SUCCESS" = false ]; do
+        if docker login -u admin -p 123 http://192.168.120.24; then
+          LOGIN_SUCCESS=true
+          echo "Login successful"
+        elif docker login --insecure-registry -u admin -p 123 http://192.168.120.24; then
+          LOGIN_SUCCESS=true
+          echo "Login successful (insecure)"
+        else
+          RETRY_COUNT=$((RETRY_COUNT+1))
+          echo "Login attempt $RETRY_COUNT failed. Retrying in 5 seconds..."
+          sleep 5
+        fi
+      done
+
+      if [ "$LOGIN_SUCCESS" = false ]; then
+        echo "Failed to log in after $MAX_RETRIES attempts. Exiting."
+        exit 1
+      fi
+
+    - echo "Login successful, proceeding with build and push..."
+    - curl -sfl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- latest
+    - ls -la ./bin/trivy
+    - export PATH=$PATH:/usr/local/bin
+    - ./bin/trivy image 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:latest
+
+push-docker-ui:
+  stage: deploy
+  image: docker:20.10.16
+  tags:
+    - docker-in-docker
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+  dependencies:
+    - build-docker-ui
+  rules:
+    - !reference [.cd_rules, rules]
+  script:
+    - apk add --no-cache bash
+    - docker load -i image_ui.tar
+    - |
+      MAX_RETRIES=3
+      RETRY_COUNT=0
+      LOGIN_SUCCESS=false
+
+      while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$LOGIN_SUCCESS" = false ]; do
+        if docker login -u admin -p 123 http://192.168.120.24; then
+          LOGIN_SUCCESS=true
+          echo "Login successful"
+        elif docker login --insecure-registry -u admin -p 123 http://192.168.120.24; then
+          LOGIN_SUCCESS=true
+          echo "Login successful (insecure)"
+        else
+          RETRY_COUNT=$((RETRY_COUNT+1))
+          echo "Login attempt $RETRY_COUNT failed. Retrying in 5 seconds..."
+          sleep 5
+        fi
+      done
+
+      if [ "$LOGIN_SUCCESS" = false ]; then
+        echo "Failed to log in after $MAX_RETRIES attempts. Exiting."
+        exit 1
+      fi
+    - docker tag temp_image_ui 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:$CI_COMMIT_SHA
+    - docker tag temp_image_ui 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:latest
+    - docker push 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:$CI_COMMIT_SHA
+    - docker push 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:latest
+    - docker rmi temp_image_ui
+    - |
+      if [ -f "image_ui.tar" ]; then
+        echo "File image_ui.tar exists. Deleting..."
+        rm -f image_ui.tar
+      else
+        echo "File image_ui.tar does not exist. Skipping..."
+      fi
+
+deploy-dev-ui:
+  stage: deploy
+  image: alpine:3.19.1
+  rules:
+    - !reference [.cd_rules, rules]
+  before_script:
+    - apk add --no-cache git yq
+    - git config --global user.email "$CI_EMAIL"
+    - git config --global user.name "$GITLAB_USERNAME"
+    - git config --global http.sslVerify false
+    - git remote set-url origin http://${GITLAB_USERNAME}:${CI_JOB_TOKEN}@192.168.120.73/dncn/retail-eshop.git
+    - git fetch origin
+    - |
+      if [ -f "image_ui.tar" ]; then
+        echo "File image_ui.tar exists. Deleting..."
+        rm -f image_ui.tar
+      else
+        echo "File image_ui.tar does not exist. Skipping..."
+      fi
+  script:
+    - export NEW_TAG=${CI_COMMIT_SHA}
+    - git checkout dev
+    - git fetch origin dev
+    - git pull origin dev
+    - yq eval '.image.tag = env(NEW_TAG)' -i deploy/kubernetes/charts/ui/values-dev.yaml
+    - git add deploy/kubernetes/charts/ui/values-dev.yaml
+    - git commit -m "[skip ci] Update Helm chart version and image tag to ${NEW_TAG}"
+    - git push origin dev
+
+# promote to uat
+push-docker-image-to-dockerhub:
+  stage: deploy-uat
+  image: docker:20.10.16
+  tags:
+    - docker-in-docker
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+  rules:
+    - !reference [.cd_rules_prod, rules]
+  script:
+    - apk add --no-cache bash
+    - |
+      # Login to Harbor
+      MAX_RETRIES=3
+      RETRY_COUNT=0
+      LOGIN_SUCCESS=false
+
+      while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$LOGIN_SUCCESS" = false ]; do
+        if docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD; then
+          LOGIN_SUCCESS=true
+          echo "Login to Harbor successful"
+        elif docker login --insecure-registry -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD ; then
+          LOGIN_SUCCESS=true
+          echo "Login to Harbor successful (insecure)"
+        else
+          RETRY_COUNT=$((RETRY_COUNT+1))
+          echo "Login attempt $RETRY_COUNT failed. Retrying in 5 seconds..."
+          sleep 5
+        fi
+      done
+
+      if [ "$LOGIN_SUCCESS" = false ]; then
+        echo "Failed to log in after $MAX_RETRIES attempts. Exiting."
+        exit 1
+      fi
+
+      docker pull 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:latest
+
+      echo "Logging in to Docker Hub"
+      echo "$DOCKER_HUB_PASSWORD" | docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
+      
+      docker tag 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:latest $DOCKER_HUB_USERNAME/$DOCKER_REPO_UI:$CI_COMMIT_SHA
+      docker tag 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:latest $DOCKER_HUB_USERNAME/$DOCKER_REPO_UI:latest
+      
+      docker push $DOCKER_HUB_USERNAME/$DOCKER_REPO_UI:$CI_COMMIT_SHA
+      docker push $DOCKER_HUB_USERNAME/$DOCKER_REPO_UI:latest
+      
+      docker rmi 192.168.120.24/eshop/$CI_REGISTRY_IMAGE_UI:latest
+      docker rmi $DOCKER_HUB_USERNAME/$DOCKER_REPO_UI:$CI_COMMIT_SHA
+      docker rmi $DOCKER_HUB_USERNAME/$DOCKER_REPO_UI:latest
+  when: manual
+
+deploy-uat-ui:
+  stage: deploy-uat
+  image: alpine:3.19.1
+  rules:
+    - !reference [.cd_rules_prod, rules]
+  before_script:
+    - apk add --no-cache git yq
+    - git config --global user.email "$CI_EMAIL"
+    - git config --global user.name "$GITLAB_USERNAME"
+    - git config --global http.sslVerify false
+    - git remote set-url origin "https://${GITLAB_USERNAME_UAT_PROD}:${CI_JOB_TOKEN_UAT_PROD}@gitlab.com/manhhung20033/retail-eshop-uat-prod.git"
+    - git fetch origin
+  script:
+    - export NEW_TAG=${CI_COMMIT_SHA}
+    - git checkout uat
+    - git fetch origin uat
+    - git pull origin uat
+    - yq eval '.image.tag = env(NEW_TAG)' -i argocd/uat/ui/values-uat.yaml
+    - git add argocd/uat/ui/values-uat.yaml
+    - git commit -m "[skip ci] Update Helm chart version and image tag to ${NEW_TAG}"
+    - git push origin uat
+  when: manual
+
+deploy-prod-ui:
+  stage: deploy-prod
+  image: alpine:3.19.1
+  rules:
+    - !reference [.cd_rules_prod, rules]
+  before_script:
+    - apk add --no-cache git yq
+    - git config --global user.email "$CI_EMAIL"
+    - git config --global user.name "$GITLAB_USERNAME"
+    - git config --global http.sslVerify false
+    - git remote set-url origin "https://${GITLAB_USERNAME_UAT_PROD}:${CI_JOB_TOKEN_UAT_PROD}@gitlab.com/manhhung20033/retail-eshop-uat-prod.git"
+    - git fetch origin
+  script:
+    - export NEW_TAG=${CI_COMMIT_SHA}
+    - git checkout prod
+    - git fetch origin prod
+    - git pull origin prod
+    - yq eval '.image.tag = env(NEW_TAG)' -i argocd/prod/ui/values-prod.yaml
+    - git add argocd/prod/ui/values-prod.yaml
+    - git commit -m "[skip ci] Update Helm chart version and image tag to ${NEW_TAG}"
+    - git push origin prod
+  when: manual
+
+  

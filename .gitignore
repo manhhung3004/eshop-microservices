@@ -1,0 +1,16 @@
+.DS_Store
+*.tfvars
+.terraform
+*.tfstate*
+*.lock.hcl
+*.log
+.vscode
+reports
+env
+oss-output
+kubeconfig_*
+.idea
+node_modules
+
+ort-build
+terraform-demo-443213-34b73df6f198.json

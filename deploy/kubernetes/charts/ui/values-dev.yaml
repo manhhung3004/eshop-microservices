@@ -1,0 +1,81 @@
+# Default values for ui.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+image:
+  repository: 192.168.120.24/eshop/eshop-ui
+  pullPolicy: IfNotPresent
+  tag: 73aa55c64b36c4123e85b2dc61f8f8be77c374d0
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 1000
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_BIND_SERVICE
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32100
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 128m
+    memory: 512Mi
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 50
+nodeSelector:
+  kubernetes.io/hostname: k8s-worker2
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+metrics:
+  enabled: true
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/actuator/prometheus"
+configMap:
+  create: true
+  name: # if blank this will be generated
+endpoints:
+  catalog: http://retail-eshop-catalog.retail-eshop.svc.cluster.local
+  # carts: http://retail-eshop-carts.retail-eshop.svc.cluster.local
+  orders: http://retail-eshop-orders.retail-eshop.svc.cluster.local
+  assets: http://retail-eshop-assets.retail-eshop.svc.cluster.local
+  checkout: http://retail-eshop-checkout.retail-eshop.svc.cluster.local
+## Ingress for load balancer
+ingress:
+  enabled: false
+  # className: ""
+istio:
+  enabled: false
+  hosts: []
+opentelemetry:
+  enabled: false
+  instrumentation: ""
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 2
+  maxUnavailable: 1

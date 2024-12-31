@@ -1,0 +1,81 @@
+image: alpine:3.20.0
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+
+stages:
+  - triggers
+
+# ui service
+trigger_ui:
+  stage: triggers
+  trigger:
+    include: src/ui/.gitlab-ci.yml
+  rules:
+    - changes:
+        - src/ui/*
+      when: always
+#orders service
+trigger_order:
+  stage: triggers
+  trigger:
+    include: src/orders/.gitlab-ci.yml
+  rules:
+    - changes:
+        - src/orders/*
+      when: always
+#load-generator
+trigger_generator:
+  stage: triggers
+  trigger:
+    include: src/load-generator/.gitlab-ci.yml
+  rules:
+    - changes:
+        - src/load-generator/*
+      when: always
+#e2e
+trigger_e2e:
+  stage: triggers
+  trigger:
+    include: src/e2e/.gitlab-ci.yml
+  rules:
+    - changes:
+        - src/e2e/*
+      when: always
+#checkout 
+trigger_checkout:
+  stage: triggers
+  trigger:
+    include: src/checkout/.gitlab-ci.yml
+  rules:
+    - changes:
+        - src/checkout/*
+      when: always
+#catalog
+trigger_catalog:
+  stage: triggers
+  trigger:
+    include: src/catalog/.gitlab-ci.yml
+  rules:
+    - changes:
+        - src/catalog/*
+      when: always
+# #cart
+# trigger_cart:
+#   stage: triggers
+#   trigger:
+#     include: src/cart/.gitlab-ci.yml
+#   rules:
+#     - changes:
+#         - src/cart/*
+#       when: always
+#assets
+trigger_assets:
+  stage: triggers
+  trigger:
+    include: src/assets/.gitlab-ci.yml
+  rules:
+    - changes:
+        - src/assets/*
+      when: always
