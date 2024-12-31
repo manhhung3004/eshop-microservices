@@ -22,7 +22,7 @@
         <java.version>17</java.version>
         <spring-cloud>2021.0.3</spring-cloud>
         <spring-cloud-aws.version>2.4.2</spring-cloud-aws.version>
-        <mapstruct.version>1.6.2</mapstruct.version>
+        <mapstruct.version>1.6.3</mapstruct.version>
     </properties>
 
     <distributionManagement>
