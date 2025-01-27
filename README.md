@@ -1,4 +1,4 @@
-# Retail Eshop 
+# eshop-microservices 
 
 This project is inspired by AWS's retail container shop examples, designed to showcase various concepts of containerization on AWS. It features a sample retail store application with functionalities like product catalog, shopping and checkout.
 
